@@ -6,8 +6,9 @@
 // ============================================================
 
 const GEMINI_MODEL = "gemini-3.5-flash";
-const GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta2/interactions";
+const GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions";
 const AGENT_TIMEOUT_MS = 25000; // 25s max par agent, pour ne jamais rester bloqué
+const MAX_RETRIES = 2; // Google a un bug connu de 404 intermittent sur ce modèle, on retente
 
 // ---------- CORS ----------
 function corsHeaders(origin) {
@@ -185,6 +186,22 @@ const AGENT_TOOLS = { economicCalendar: [{ type: "google_search" }] };
 
 // ---------- Appel Gemini avec timeout ----------
 async function callInteraction({ apiKey, systemInstruction, input, previousInteractionId, tools, schema }) {
+  let lastError;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await callInteractionOnce({ apiKey, systemInstruction, input, previousInteractionId, tools, schema });
+    } catch (err) {
+      lastError = err;
+      // Ne retente que sur les erreurs transitoires connues (404 intermittent, 429, 5xx)
+      const retriable = /\(404\)|\(429\)|\(50[0-9]\)/.test(err.message);
+      if (!retriable || attempt === MAX_RETRIES) throw err;
+      await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
+async function callInteractionOnce({ apiKey, systemInstruction, input, previousInteractionId, tools, schema }) {
   const body = {
     model: GEMINI_MODEL,
     system_instruction: systemInstruction,
